@@ -1,139 +1,168 @@
 import sys
-import pandas as pd
 import mysql.connector
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
-import pickle
-from datetime import datetime, timedelta
+import pandas as pd
+import joblib
+from sklearn.preprocessing import LabelEncoder
+from sqlalchemy import create_engine
 import json
 
+def load_model(subcategory):
+    model_file = {
+        'Cakes': './models/cakes_model.pkl',
+        'Cookies': './models/cookies_model.pkl',
+        'Eggs': './models/eggs_model.pkl',
+        'Rice': './models/rice_model.pkl',
+        'SoftDrinks': './models/soft_drinks_model.pkl'
+    }
+    model_path = model_file.get(subcategory)
+    if model_path:
+        return joblib.load(model_path)
+    else:
+        raise ValueError(f"No model found for subcategory '{subcategory}'.")
 
 def preprocess_data(data):
-    # Convert 'Date' column to datetime
-    data['Date'] = pd.to_datetime(data['Date'])
+    # Convert 'orderDate' to datetime
+    data['orderDate'] = pd.to_datetime(data['orderDate'])
 
-    # Group data by week and month, and calculate the total sales
-    data_weekly = data.groupby(pd.Grouper(key='Date', freq='W')).sum().reset_index()
-    data_monthly = data.groupby(pd.Grouper(key='Date', freq='M')).sum().reset_index()
+    # Label Encoding for 'Category' and 'SubCategory' (assuming they are ordinal)
+    label_encoder = LabelEncoder()
+    data['Category_LabelEncoded'] = label_encoder.fit_transform(data['Category'])
+    data['Sub Category_LabelEncoded'] = label_encoder.fit_transform(data['SubCategory'])
 
-    # Handling missing values
-    imputer = SimpleImputer(strategy='mean')
-    data_weekly['Promotion'] = data_weekly['Promotion'].astype(str)  # Convert to string type
-    data_weekly['Promotion'].fillna(data_weekly['Promotion'].mode()[0], inplace=True)
+    # Resample data to days, weeks, and months
+    daily_data = data.groupby(pd.Grouper(key='orderDate', freq='D')).agg({
+        'Sales': 'sum',
+        'Discount': 'sum',   # Use 'sum' for Discount column
+        'Profit': 'sum',     # Use 'sum' for Profit column
 
-    data_weekly['Promotion'].fillna(data_weekly['Promotion'].mode()[0], inplace=True)
-    data_monthly['Promotion'].fillna(data_monthly['Promotion'].mode()[0], inplace=True)
-    data_weekly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']] = imputer.fit_transform(data_weekly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']])
-    data_monthly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']] = imputer.fit_transform(data_monthly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']])
+        'Category': 'first',
+        'SubCategory': 'first',
+        'Category_LabelEncoded': 'first',           # Include encoded columns in daily_data
+        'Sub Category_LabelEncoded': 'first'        # Include encoded columns in daily_data
+    }).reset_index()
 
-    # Replace 'Yes' and 'No' values with default values before converting to int
-    default_promotion = 0
-    promotion_mapping = {'Yes': 1, 'No': 0}
-    data_weekly['Promotion'] = data_weekly['Promotion'].map(promotion_mapping).fillna(default_promotion).astype(int)
-    data_monthly['Promotion'] = data_monthly['Promotion'].map(promotion_mapping).fillna(default_promotion).astype(int)
+    weekly_data = data.groupby(pd.Grouper(key='orderDate', freq='W')).agg({
+        'Sales': 'sum',
+        'Discount': 'sum',   # Use 'sum' for Discount column
+        'Profit': 'sum',     # Use 'sum' for Profit column
 
-    # Feature scaling
-    scaler = StandardScaler()
-    data_weekly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']] = scaler.fit_transform(data_weekly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']])
-    data_monthly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']] = scaler.fit_transform(data_monthly[['Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost']])
+        'Category': 'first',
+        'SubCategory': 'first',
+        'Category_LabelEncoded': 'first',           # Include encoded columns in weekly_data
+        'Sub Category_LabelEncoded': 'first'        # Include encoded columns in weekly_data
+    }).reset_index()
 
-    return {'weekly': data_weekly.drop(columns=['Date', 'Quantity']),
-            'monthly': data_monthly.drop(columns=['Date', 'Quantity'])}
+    monthly_data = data.groupby(pd.Grouper(key='orderDate', freq='M')).agg({
+        'Sales': 'sum',
+        'Discount': 'sum',   # Use 'sum' for Discount column
+        'Profit': 'sum',     # Use 'sum' for Profit column
 
+        'Category': 'first',
+        'SubCategory': 'first',
+        'Category_LabelEncoded': 'first',           # Include encoded columns in monthly_data
+        'Sub Category_LabelEncoded': 'first'        # Include encoded columns in monthly_data
+    }).reset_index()
 
-# MySQL connection details
-connection = mysql.connector.connect(
-    host='localhost',
-    user='root',
-    password='',
-    database='supermarket'
-)
+    # Fill any missing values with 0
+    daily_data.fillna(0, inplace=True)
+    weekly_data.fillna(0, inplace=True)
+    monthly_data.fillna(0, inplace=True)
 
-# Retrieve the product name from command line arguments
-product_name = sys.argv[1]
+    daily_data.set_index('orderDate', inplace=True)
+    weekly_data.set_index('orderDate', inplace=True)
+    monthly_data.set_index('orderDate', inplace=True)
 
-# Query to fetch data from the salesorder and product tables with the dynamically passed product name
-query = f"""
-    SELECT so.Date, p.Price, so.Temperature, so.CompetitorPrice, so.CompetitorCount, so.AdvertisingCost, so.Promotion, so.Quantity
-    FROM salesorder AS so
-    JOIN product AS p ON so.product_id = p.product_id
-    WHERE p.product_name = '{product_name}'
-"""
+    # Create lag features for the target column (Sales)
+    def create_lag_features(data, target_column, lag=1):
+        data_copy = data.copy()
+        for i in range(1, lag + 1):
+            data_copy[f"{target_column}_lag_{i}"] = data_copy[target_column].shift(i)
+        return data_copy
 
-# Create a cursor and execute the query
-cursor = connection.cursor()
-cursor.execute(query)
+    # Define the number of days you want to forecast (3 days in this case)
+    forecast_days = 3
 
-# Fetch the data and store it in a DataFrame
-data = pd.DataFrame(cursor.fetchall(),
-                    columns=['Date', 'Price', 'Temperature', 'CompetitorPrice', 'CompetitorCount', 'AdvertisingCost', 'Promotion', 'Quantity'])
+    # Create lag features for the target column (Sales)
+    daily_data_lagged = create_lag_features(daily_data, "Sales", forecast_days)
+    weekly_data_lagged = create_lag_features(weekly_data, "Sales", forecast_days)
+    monthly_data_lagged = create_lag_features(monthly_data, "Sales", forecast_days)
 
-# Preprocess the data
-preprocessed_data = preprocess_data(data)
+    # Drop rows with NaN values (due to lag creation)
+    daily_data_lagged = daily_data_lagged.dropna()
+    weekly_data_lagged = weekly_data_lagged.dropna()
+    monthly_data_lagged = monthly_data_lagged.dropna()
 
-# Load the trained models from the pickle files
-with open('./models/linear_regression_model.pkl', 'rb') as file:
-    linear_regression_model = pickle.load(file)
+    # Separate the features (X) and the target (y)
+    columns_to_drop = ["Sales", "Category", "SubCategory"]
+    X_daily = daily_data_lagged.drop(columns_to_drop, axis=1)
+    X_weekly = weekly_data_lagged.drop(columns_to_drop, axis=1)
+    X_monthly = monthly_data_lagged.drop(columns_to_drop, axis=1)
 
-with open('./models/linear_regression_model2.pkl', 'rb') as file:
-    linear_regression_model2 = pickle.load(file)
+    return X_daily, X_weekly, X_monthly
 
-# Make predictions using the loaded models and the preprocessed data
-weekly_prediction_linear = linear_regression_model.predict(preprocessed_data['weekly'])
-monthly_prediction_linear = linear_regression_model2.predict(preprocessed_data['monthly'])
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python script.py <SubCategory> <period>")
+        sys.exit(1)
 
+    subcategory = sys.argv[1]
+    period = sys.argv[2]
 
-# Get the maximum week and month values from the selected data
-max_week = data['Date'].dt.isocalendar().week.max()
-max_month = data['Date'].dt.month.max()
+    try:
+        # Connect to the database using SQLAlchemy
+        conn_string = 'mysql+mysqlconnector://root:@localhost/supermarket'
+        engine = create_engine(conn_string)
 
+        # Assuming your data table is named 'salesdata'
+        start_date, end_date = sys.argv[2].split(" to ")
+        query = f"SELECT Discount, Profit, Sales, Category, SubCategory, `orderDate` FROM salesdata WHERE SubCategory = '{subcategory}' AND orderDate BETWEEN '{start_date}' AND '{end_date}';"
 
-# Get the current year
-current_year = data['Date'].dt.year.max()
+        # Use the SQLAlchemy connection to read data from the database
+        new_data_df = pd.read_sql(query, con=engine)
 
-# Check if the maximum week or month exceeds the maximum values of the current year
-if max_week > pd.Timestamp(year=current_year, month=12, day=31).week:
-    next_year = current_year + 1
-else:
-    next_year = current_year
+        # Load the model
+        loaded_model = load_model(subcategory)
 
- #Generate the date ranges for the weekly and monthly predictions using the next year
-date_range_weekly = pd.date_range(start=f'{next_year + 1}-01-01', periods=len(weekly_prediction_linear), freq='W-SUN')
-date_range_monthly = pd.date_range(start=f'{next_year + 1}-01-01', periods=len(monthly_prediction_linear), freq='MS')
+        # Preprocess the new data
+        X_daily, X_weekly, X_monthly = preprocess_data(new_data_df)
 
-# Assign dates to the predicted values dataframes
-predicted_df_weekly = pd.DataFrame({'Date': date_range_weekly, 'Prediction': weekly_prediction_linear})
-predicted_df_monthly = pd.DataFrame({'Date': date_range_monthly, 'Prediction': monthly_prediction_linear})
+        # Make predictions for the next 3 days, weeks, and months using the new data
+        forecast_features_daily = X_daily.tail(-3).copy()
+        forecast_features_weekly = X_weekly.tail(-3).copy()
+        forecast_features_monthly = X_monthly.tail(-3).copy()
 
-# Convert the 'Date' column to a formatted string
-predicted_df_weekly['Date'] = predicted_df_weekly['Date'].dt.strftime('%Y-%m-%d')
-predicted_df_monthly['Date'] = predicted_df_monthly['Date'].dt.strftime('%Y-%m-%d')
+        # List to store the predictions for the next 3 days, weeks, and months
+        predictions_daily = []
+        predictions_weekly = []
+        predictions_monthly = []
 
+        # Perform the forecasting for the next 3 days, weeks, and months
+        for i in range(3):
+            # Make the prediction for the next day using the current features (daily)
+            prediction_daily = loaded_model.predict(forecast_features_daily)
+            predictions_daily.append(float(prediction_daily[0]))
+            forecast_features_daily = forecast_features_daily.shift(-1).fillna(prediction_daily[0])
 
-# Convert the 'Date' column to a datetime-like data type
-predicted_df_monthly['Date'] = pd.to_datetime(predicted_df_monthly['Date'])
+            # Make the prediction for the next week using the current features (weekly)
+            prediction_weekly = loaded_model.predict(forecast_features_weekly)
+            predictions_weekly.append(float(prediction_weekly[0]))
+            forecast_features_weekly = forecast_features_weekly.shift(-1).fillna(prediction_weekly[0])
 
-# Convert the 'Date' column to a formatted string with only the month name
-predicted_df_monthly['Date'] = predicted_df_monthly['Date'].dt.strftime('%B')
+            # Make the prediction for the next month using the current features (monthly)
+            prediction_monthly = loaded_model.predict(forecast_features_monthly)
+            predictions_monthly.append(float(prediction_monthly[0]))
+            forecast_features_monthly = forecast_features_monthly.shift(-1).fillna(prediction_monthly[0])
 
+        # Convert the forecasts to a dictionary
+        forecast_data = {
+            "Forecast for the next 3 days": predictions_daily,
+            "Forecast for the next 3 weeks": predictions_weekly,
+            "Forecast for the next 3 months": predictions_monthly
+        }
 
-# Convert DataFrames to JSON
-json_data_weekly = predicted_df_weekly.to_json(orient='records')
-json_data_monthly = predicted_df_monthly.to_json(orient='records')
+        # Output the forecast data as JSON
+        print(json.dumps(forecast_data))
 
-# Create a dictionary to hold the JSON data
-data = {
-    'weekly': json.loads(json_data_weekly),
-    'monthly': json.loads(json_data_monthly)
-}
-
-# Convert the dictionary to JSON
-json_data = json.dumps(data)
-
-# Print or return the JSON data
-print(json_data)
-
-
-# Close the cursor and connection
-cursor.close()
-connection.close()
+    except ValueError as e:
+        print(str(e))
+        sys.exit(1)
