@@ -11,7 +11,6 @@ const bodyParser = require('body-parser');
 const { router: authRoutes } = require("./routes/auth");
 
 
-
 app.set("view engine", "ejs");
 app.use(cors());
 app.use(session({
@@ -22,11 +21,11 @@ app.use(session({
 app.use(flash());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+
 // Routes setup
 app.use("/", routes);
 app.use("/", authRoutes);
 app.use(express.static(path.join(__dirname, "views")));
-
 
 // Error handler middleware
 const errorHandler = (err, req, res, next) => {

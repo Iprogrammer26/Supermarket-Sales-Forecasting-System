@@ -1,5 +1,7 @@
 const path = require("path");
 const db = require("../routes/db_config");
+const fs = require('fs');
+const csv = require('csv-parser');
 
 function renderaddPage(req, res) {
   if (req.session.user && req.session.user.user_type === "Cashier") {
@@ -208,8 +210,67 @@ const addStock = (req, res, next) => {
   });
 };
 
+function uploaded(req, res) {
+  // Access the uploaded file
+  const file = req.file;
+  console.log(req.file);
+
+  // Create a connection to the database
+  const connection = db.createConnection();
+
+  // Process the CSV file
+  const filePath = path.join(__dirname, '..', 'uploads', file.filename); // Construct the file path
+  fs.createReadStream(filePath)
+    .pipe(csv())
+    .on('data', (data) => {
+      // Convert the date format to 'YYYY-MM-DD'
+      const dateParts = data.OrderDate.split('/');
+      const formattedDate = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
+
+      // Prepare the data to insert into the database with the updated column headers
+      const newData = {
+        OrderDate: formattedDate,
+        Category: data.Category,
+        SubCategory: data.SubCategory,
+        Sales: data.Sales,
+        Discount: data.Discount,
+        Profit: data.Profit
+      };
+
+      // Insert data into the database
+      const sql = 'INSERT INTO salesorder (OrderDate, Category, SubCategory, Sales, Discount, Profit) VALUES (?, ?, ?, ?, ?, ?)';
+      const values = [newData.OrderDate, newData.Category, newData.SubCategory, newData.Sales, newData.Discount, newData.Profit];
+
+      // Execute the database query to insert the data
+      connection.query(sql, values, (error, results) => {
+        if (error) {
+          console.error('Error inserting data into the database:', error);
+          // Handle the error here, for example, you can send an error response to the client
+          res.status(500).json({ error: 'Error inserting data into the database' });
+        }
+      });
+    })
+    .on('end', () => {
+      console.log('CSV file successfully processed');
+      req.flash('success', 'CSV file successfully processed');
+      res.redirect('/add'); // Redirect to a success page or desired route
+
+      // Close the database connection
+      connection.end();
+    })
+    .on('error', (error) => {
+      console.error('Error processing CSV file:', error);
+      // Handle the error here, for example, you can send an error response to the client
+      res.status(500).json({ error: 'Error processing CSV file' });
+
+      // Close the database connection
+      connection.end();
+    });
+}
+
 module.exports = {
   renderaddPage,
   createSalesOrder,
   addStock,
+  uploaded
 };

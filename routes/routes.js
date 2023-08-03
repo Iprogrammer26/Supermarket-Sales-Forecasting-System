@@ -6,11 +6,26 @@ const reportsController = require('../controllers/reportsController');
 const addController = require('../controllers/addController');
 const ForecastingController = require('../controllers/ForecastingController');
 const { isAuthenticated } = require('./auth');
+const multer = require('multer');
+
 
 const forecastController = require('../controllers/forecastController')
 
 
 const dbConfig = require('./db_config');
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    // Specify the directory where uploaded files will be stored
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    // Generate a unique filename for the uploaded file
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+
+// Create an instance of the multer middleware with the configured storage options
+const upload = multer({ storage: storage });
 
 router.get(['/', '/login'], loginController.renderLoginPage);
 router.get('/register', registerController.renderRegisterPage);
@@ -21,9 +36,10 @@ router.post('/register', registerController.registerUser);
 
 router.post('/stock', addController.addStock);
 router.post('/sales', isAuthenticated, addController.createSalesOrder);
-router.get('/forecasts/:product_name', forecastController.forecast)
+router.get('/forecasts/:subcategory/:period', forecastController.forecast)
 router.get('/report/:product_name', reportsController.graphdata);
-
+router.get('/salesdata', reportsController.getSalesData);
+router.post('/upload',upload.single('csvFile'),addController.uploaded);
 
 
 router.get('/sales', (req, res) => {

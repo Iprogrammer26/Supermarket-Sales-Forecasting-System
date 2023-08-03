@@ -36,7 +36,7 @@ async function registerUser(req, res) {
           const queryInsert =
             "INSERT INTO users (user_type,name, username, password, email ) VALUES (?, ?, ?, ?, ?)";
           const valuesInsert = [user_type,name, username, hashedPassword,email ];
-
+             
           connection.query(queryInsert, valuesInsert, (insertError, insertResults) => {
             if (insertError) {
               console.error("Error registering user:", insertError);

@@ -7,113 +7,57 @@ const connection = mysql.createConnection({
   password: '',
   database: 'supermarket',
 });
-
 function renderReportsPage(req, res) {
-  if (req.session.user && req.session.user.user_type === 'Sales Manager') {
-    const query = `
-    SELECT product.product_name, SUM(salesorder.quantity) AS total_quantity, product.available_quantity
-    FROM salesorder
-    JOIN product ON salesorder.product_id = product.product_id
-    GROUP BY product.product_name, product.available_quantity`;
-  
-    connection.query(query, (error, results) => {
-      if (error) {
-        console.error(error);
-        return res.status(500).send('Error retrieving sales data');
-      }
-
-      const salesOrders = results.map((order) => ({
-        Quantity: order.Quantity,
-        Total: order.Total,
-        product_name: order.product_name,
-        available_quantity: order.available_quantity,
-      }));
-
-      const recordsPerPage = 10;
-      const currentPage = req.query.page || 1;
-      const startIndex = (currentPage - 1) * recordsPerPage;
-      const endIndex = startIndex + recordsPerPage;
-      const paginatedOrders = salesOrders.slice(startIndex, endIndex);
-
-      res.render('reports', {
-        salesOrders: salesOrders,
-        paginatedOrders: paginatedOrders,
-        currentPage: currentPage,
-        recordsPerPage: recordsPerPage,
-      });
-    });
-  } else {
-    res.redirect('/');
-  }
-
+ res.render('reports')
 }
 
-module.exports = {
-  renderReportsPage,
-};
 
-
-  function graphdata(req, res) {
-    connection.query(`
-      SELECT product.product_name, WEEK(salesorder.date) AS week, SUM(salesorder.quantity) AS weekly_sales, 
-             MONTH(salesorder.date) AS month, SUM(salesorder.quantity) AS monthly_sales
-      FROM salesorder
-      JOIN product ON salesorder.product_id = product.product_id
-      GROUP BY product.product_name, WEEK(salesorder.date), MONTH(salesorder.date)
-    `, (error, results) => {
-      if (error) {
-        // Handle the error
-        console.error(error);
-        res.status(500).json({ error: 'An error occurred' });
-        return;
-      }
-  
-      try {
-        const salesOrders = results.map((order) => {
-          return {
-            productName: order.product_name,
-            weeklySales: order.weekly_sales,
-            monthlySales: order.monthly_sales,
-          };
-        });
-  
-        res.json(salesOrders);
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'An error occurred' });
-      }
-    });
-  }
-  
+const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 function graphdata(req, res) {
   const productName = req.params.product_name;
 
-  const query = `
-    SELECT MONTH(salesorder.date) AS month, SUM(salesorder.quantity) AS totalQuantity
-    FROM salesorder
-    JOIN product ON salesorder.product_id = product.product_id
-    WHERE product.product_name = ?
-    GROUP BY MONTH(salesorder.date)
-    ORDER BY MONTH(salesorder.date)
-  `;
+  const query = `SELECT sales, orderDate FROM salesdata WHERE subcategory = '${productName}'`;
 
-  connection.query(query, [productName], (error, results) => {
+  connection.query(query, (error, results) => {
     if (error) {
       console.error('Error executing MySQL query:', error);
       return res.status(500).json({ error: 'An error occurred' });
     }
 
     const graphData = results.map((row) => ({
-      month: monthNames[row.month - 1],  // Subtract 1 to match the array index
-      totalQuantity: row.totalQuantity,
+      sales: row.sales,
+      orderDate: new Date(row.orderDate).toISOString().split('T')[0],
     }));
 
     res.json(graphData);
   });
 }
 
+
+
+function getSalesData(req, res) {
+  const query = `
+    SELECT product.product_name, SUM(salesorder.quantity) AS total_quantity
+    FROM salesorder
+    JOIN product ON salesorder.product_id = product.product_id
+    GROUP BY product.product_name`;
+
+  connection.query(query, (error, results) => {
+    if (error) {
+      console.error('Error executing MySQL query:', error);
+      return res.status(500).json({ error: 'An error occurred' });
+    }
+
+    const salesData = results.map(row => ({
+      product_name: row.product_name,
+      total_quantity: row.total_quantity
+    }));
+
+    res.json(salesData);
+  });
+}
 module.exports = {
   renderReportsPage,
-  graphdata,
+  graphdata,getSalesData
 };
